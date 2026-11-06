@@ -1,6 +1,0 @@
-id=inkpanel_warm
-name=InkPanel Boot Warmup
-version=v1.0
-versionCode=1
-author=zuakeo
-description=Starts InkPanel once after boot so its Quick Settings tile can be resolved and bound by SystemUI. Remove this module to disable.

@@ -5,7 +5,7 @@
 
 **亮度 · 色温 · 对比度 · 黑色 · 白色**
 
-> 不刷机、不换 SystemUI、不改 ROM。一个 APK + 一个 Magisk 模块，全部可逆。
+> 一个 APK + 一个 LSPosed 作用域，不刷机、不换 SystemUI、不改 ROM，全部可逆。
 
 适配机型：**海信 Touch Lite（HITV205N）**，Android 11 / Vision UI。
 同代 Vision 系统的其他海信墨水屏（A5 / A7 / A9）结构类似，但未验证。
@@ -26,46 +26,43 @@
 
 ## 二、架构
 
-三层，各管一件事：
+两层，比看起来简单：
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  ① InkPanel.apk（普通应用）                               │
-│     ├─ PanelTile : TileService   快捷设置里的「亮度」格子   │
-│     └─ MainActivity              无图标、透明，仅用于预热    │
-│     同时是 LSPosed 模块的载体                              │
-└────────────────────────┬────────────────────────────────┘
-                         │ sendBroadcast（setPackage 定向到 SystemUI）
-┌────────────────────────▼────────────────────────────────┐
-│  ② LSPosed 模块（注入 com.android.systemui 进程）          │
-│     ├─ hook SystemUIApplication.onCreate → 注册接收器       │
-│     ├─ 收到广播 → 反射调用海信私有单例                       │
-│     └─ hook HmctQSSecondInkPanel 构造 → 隐藏内嵌面板         │
-└────────────────────────┬────────────────────────────────┘
-                         │ 反射调用
-┌────────────────────────▼────────────────────────────────┐
-│  ③ Magisk 模块（boot 层，root）                           │
-│     开机 → 等解锁 → am start 预热 → 强制重建磁贴列表         │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["<b>① InkPanel.apk</b><br/>PanelTile : TileService<br/>提供「亮度」格子，仅用于让 spec 可解析"]
+    B["<b>② LSPosed 模块</b><br/>运行在 com.android.systemui 进程内"]
+    C["<b>系统原生面板</b><br/>SeekBarsDetailPopWindow"]
+    D["下拉里的内嵌面板<br/>HmctQSSecondInkPanel"]
+
+    A -- "格子被点击（不需要绑定服务）" --> B
+    B -- "反射 getInstance / showDetailWindow" --> C
+    B -. "同时隐藏" .-> D
 ```
 
-### 为什么必须三层
+### 关键点：点击是在 SystemUI 里接管的
 
-- **面板是系统私有的**：`SeekBarsDetailPopWindow` 在 SystemUI 的 APK 里，窗口类型是
-  `KEYGUARD_DIALOG`，只有系统身份才能 `addView`。普通应用即使反编译拿到类名也画不出来。
-  所以必须有 ②，在 SystemUI 进程里跑。
-- **磁贴必须由独立应用提供**：`TileService` 只能声明在 APK 里，没法直接塞进 SystemUI。
-  所以有 ①。
-- **海信把第三方 TileService 的启动拦了**（详见坑 #6/#7/#8）：开机后必须先让应用
-  "前台跑过一次"、且用户已解锁，SystemUI 才允许绑定。应用层做不到自动触发，只能靠 root。所以有 ③。
+磁贴的 `TileService` **不会被启动**。模块 hook 了 `QSTileImpl#click()`，
+在点击事件进入框架、还没走到"启动服务"那一步时就把事件截走：
+
+```
+before click(tile):
+    if tile 是 CustomTile 且 mComponent.package == com.zuakeo.inkpanel:
+        setResult(null)          // 拦掉原逻辑，服务不会被拉起
+        togglePanel()            // 直接调面板
+```
+
+这是 v0.2 的核心改动。v0.1 走的是"让磁贴正常启动 `TileService`"，但海信会拦第三方服务的
+启动（详见「踩过的坑」第 6~8 条），导致重启或进程被杀后磁贴就哑了。
+改成在 SystemUI 内部接管后，**不再依赖应用进程、不需要服务绑定、不需要任何开机脚本**——
+应用从未运行过也能用。
 
 ### 数据流
 
 ```
 用户点「亮度」格子
-  → PanelTile.onClick()
-  → sendBroadcast(ACTION, package=com.android.systemui)
-  → HookEntry 的 BroadcastReceiver
+  → SystemUI QSTileImpl.click()
+  → [模块拦截] 判断是不是我们的 tile
   → SeekBarsDetailPopWindow.getInstance(ctx)
   → isShowing() ? closeDetailWindow() : (collapsePanels(); showDetailWindow())
   → 面板出现在桌面下方，点第二次关闭
@@ -86,6 +83,8 @@
 | 下拉里的内嵌面板 | `com.hmct.systemui.qs.ink2.HmctQSSecondInkPanel` |
 | 内嵌面板容器 | `LinearLayout` id `0x7f0b0342`，固定高 704 |
 | 外层头部 | `com.hmct.systemui.qs.HmctQuickStatusBarHeader`，固定高 828 |
+| 磁贴基类 | `com.android.systemui.qs.tileimpl.QSTileImpl`，有 `click()` |
+| 第三方磁贴 | `com.android.systemui.qs.external.CustomTile`，字段 `mComponent` |
 | 快捷格子列表 | `Settings.Secure` 的 `sysui_qs_tiles`，`custom(pkg/cls)` 表示第三方磁贴 |
 | 亮度 / 色温 / 显示模式 | `Settings.System` 的 `screen_brightness` / `screen_brightness_tctemp` / `current_epd_mode` |
 
@@ -122,7 +121,8 @@ aapt2 compile → aapt2 link（顺便生成 R.java）
 
 ## 五、踩过的坑
 
-按踩到的顺序，每条都花过时间：
+按踩到的顺序，每条都花过时间。第 6~8 条现在已经**不适用**了（架构改了），
+但保留下来，因为它们解释了为什么最终方案是"在 SystemUI 里接管点击"。
 
 ### 1. Xposed 桩的返回类型必须精确
 `findAndHookMethod` 的真实返回值是 `XC_MethodHook.Unhook`，不是 `void`。
@@ -165,8 +165,11 @@ SystemUI 在开机很早的阶段创建磁贴，那时应用还没跑过 → 解
 而且之后不会自动重试。光重启 SystemUI 也不够，必须**改一次 `sysui_qs_tiles`**
 （删掉再加回）才会触发 `QSTileHost` 重建。
 
+> 6/7/8 的最终解法不是"绕过"，而是**换架构**：既然服务起不来，就别让点击去启动服务。
+> 直接 hook `QSTileImpl#click()` 在 SystemUI 内部接管，问题自然消失。
+
 ### 9. `install -r` 会重置待机分组
-重装后待机分组回到 `RESTRICTED(50)`，磁贴失效。等于每次装新版都要重来一遍预热。
+重装后待机分组回到 `RESTRICTED(50)`，磁贴失效。这条在 v0.2 之后不再影响功能。
 
 ### 10. javac 默认按 GBK 读源码
 中文环境编译带中文的 Java 源码会直接报错，必须显式 `-encoding UTF-8`。
@@ -186,7 +189,7 @@ SystemUI 在开机很早的阶段创建磁贴，那时应用还没跑过 → 解
 
 ```bash
 bash build.sh
-# 产物：dist/InkPanel-0.1.apk
+# 产物：dist/InkPanel-0.2.apk
 ```
 
 `build.sh` 开头的 SDK / JDK 路径按本机改一下即可。
@@ -196,23 +199,16 @@ bash build.sh
 ## 七、安装
 
 ```bash
-adb install -r dist/InkPanel-0.1.apk
+adb install -r dist/InkPanel-0.2.apk
 ```
 
-1. 在 **LSPosed / Vector** 里启用「水墨面板」，作用域勾 **System UI**，重启设备
-2. 下拉通知栏 → 长按格子进编辑 → 把「亮度」拖到第一排
-3. 装 Magisk 预热模块（否则每次重启后磁贴会失效）：
+1. 在 **LSPosed / Vector** 里启用「水墨面板」，作用域勾 **System UI**
+2. 重启设备
+3. 下拉通知栏 → 长按格子进编辑 → 把「亮度」拖到第一排
 
-```bash
-adb push dist/inkpanel_warm /sdcard/
-adb shell su -c "cp -r /sdcard/inkpanel_warm /data/adb/modules/inkpanel_warm"
-adb shell su -c "chmod 755 /data/adb/modules/inkpanel_warm/service.sh"
-```
+完事。**不需要装任何 Magisk 模块**，重启后磁贴也能直接用。
 
-重启 → 解锁 → 磁贴自动就绪。
-
-> 应用本身**没有桌面图标**（故意去掉的，避免桌面多一个用不到的入口）。
-> 它只以「快捷设置格子」的形式存在。
+> 应用本身没有桌面图标（故意去掉的），它只以「快捷设置格子」的形式存在。
 
 ---
 
@@ -220,7 +216,6 @@ adb shell su -c "chmod 755 /data/adb/modules/inkpanel_warm/service.sh"
 
 ```bash
 adb uninstall com.zuakeo.inkpanel
-adb shell su -c "rm -rf /data/adb/modules/inkpanel_warm"
 ```
 
 在 LSPosed 里关掉模块，重启。
@@ -237,8 +232,8 @@ adb shell settings put secure sysui_qs_tiles \
 
 - 只在这一个机型 / 一个 ROM 版本上验证过。海信改版后类名或布局一变就得重新逆向。
 - 磁贴冷启动约 1~2 秒（墨水屏全刷），比原生格子慢。
-- 重装 APK 后需要重启一次才能恢复磁贴。
 - 面板位置和尺寸由系统决定，本项目没动。
+- 依赖 LSPosed/Vector。没有 Xposed 环境就用不了。
 
 ---
 
@@ -249,18 +244,22 @@ adb shell settings put secure sysui_qs_tiles \
 人负责：提需求、在真机上点、反馈"这个不对"。
 AI 负责：反编译定位、写代码、搭构建脚本、跑 adb 验证、改到能用。
 
-过程不是一次成型——上面 12 个坑基本都是"先写错、跑一遍、看日志、再改"逼出来的。
-真机验证占了大部分时间：单是"为什么磁贴点了没反应"这一条，前后重启了五六次，
-才定位到是 `MobileSafe` + 解锁状态 + 磁贴被丢弃三个原因叠加。
+过程不是一次成型。v0.1 走的是"让磁贴正常启动服务"的路，为此还写了一个 Magisk 模块，
+在开机解锁后预热应用、强制重建磁贴列表——但那套很脆：应用进程一被杀，磁贴就又哑了。
+v0.2 换思路，改成在 SystemUI 里直接接管点击，Magisk 模块整个删掉，反而更简单也更稳。
+
+上面 12 个坑基本都是"先写错、跑一遍、看日志、再改"逼出来的。
+单是"为什么磁贴点了没反应"这一条，前后重启了七八次，才定位到是
+`MobileSafe` + 解锁状态 + 磁贴被丢弃三个原因叠加，最后发现根本不该走那条路。
 
 如果这段对你有用：**这类项目里，AI 的价值不在于一次写对，而在于能不烦不躁地把
-"打日志 → 读日志 → 改假设 → 再试"这个循环跑完。**
+"打日志 → 读日志 → 改假设 → 再试"这个循环跑完，并且敢推翻自己前面的方案。**
 
 ---
 
 ## 十一、免责声明
 
-- 涉及 Magisk / LSPosed / 系统私有接口，**存在变砖风险**，自行承担。
+- 涉及 LSPosed / 系统私有接口，存在风险，自行承担。
 - 仅供个人学习研究，不保证适配其他机型。
 - 本项目不包含任何海信私有代码或资源，只通过反射调用系统中已存在、可公开访问的方法。
 
