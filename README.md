@@ -30,14 +30,14 @@
 
 ```mermaid
 flowchart TD
-    A["<b>① InkPanel.apk</b><br/>PanelTile : TileService<br/>提供「亮度」格子，仅用于让 spec 可解析"]
-    B["<b>② LSPosed 模块</b><br/>运行在 com.android.systemui 进程内"]
-    C["<b>系统原生面板</b><br/>SeekBarsDetailPopWindow"]
+    A["① InkPanel.apk<br/>PanelTile: TileService<br/>提供「亮度」格子"]
+    B["② LSPosed 模块<br/>运行在 SystemUI 进程内"]
+    C["系统原生面板<br/>SeekBarsDetailPopWindow"]
     D["下拉里的内嵌面板<br/>HmctQSSecondInkPanel"]
 
-    A -- "格子被点击（不需要绑定服务）" --> B
-    B -- "反射 getInstance / showDetailWindow" --> C
-    B -. "同时隐藏" .-> D
+    A -->|"格子被点击（不启动服务）"| B
+    B -->|"反射 getInstance / showDetailWindow"| C
+    B -.->|"同时隐藏"| D
 ```
 
 ### 关键点：点击是在 SystemUI 里接管的
