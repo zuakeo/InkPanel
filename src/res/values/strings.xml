@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">水墨面板</string>
+    <string name="tile_label">亮度</string>
+    <string name="xposed_desc">点这个格子弹出亮度 / 色温 / 对比度 / 黑白 五条滑杆的面板</string>
+</resources>

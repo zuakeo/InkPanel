@@ -1,0 +1,9 @@
+build/
+ref/
+work-dex*.txt
+dist/*.apk
+dist/*.idsig
+*.log
+.idea/
+*.iml
+local.properties
