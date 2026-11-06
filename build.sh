@@ -29,7 +29,7 @@ echo "[3/8] link (generate R.java)"
     -A "$SRC/assets" \
     --java "$OUT/gen" \
     --min-sdk-version 30 --target-sdk-version 30 \
-    --version-code 1 --version-name 0.1 \
+    --version-code 2 --version-name 0.2 \
     "$OUT/res.zip"
 
 echo "[4/8] compile java"
@@ -50,8 +50,8 @@ echo "[8/8] sign"
 "$JAVA" -jar "$APKSIGNER" sign \
     --ks "$KS" --ks-pass pass:android --key-pass pass:android \
     --ks-key-alias androiddebugkey \
-    --out "$ROOT/dist/InkPanel-0.1.apk" "$OUT/aligned.apk"
+    --out "$ROOT/dist/InkPanel-0.2.apk" "$OUT/aligned.apk"
 
-"$JAVA" -jar "$APKSIGNER" verify --print-certs "$ROOT/dist/InkPanel-0.1.apk" | head -4
-ls -lh "$ROOT/dist/InkPanel-0.1.apk"
+"$JAVA" -jar "$APKSIGNER" verify --print-certs "$ROOT/dist/InkPanel-0.2.apk" | head -4
+ls -lh "$ROOT/dist/InkPanel-0.2.apk"
 echo "OK"

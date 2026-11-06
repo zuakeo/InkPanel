@@ -63,6 +63,45 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
 
         hookHideInlinePanel(lpparam.classLoader);
+        hookTileClick(lpparam.classLoader);
+    }
+
+    private void hookTileClick(final ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "com.android.systemui.qs.tileimpl.QSTileImpl",
+                    cl,
+                    "click",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                Object tile = param.thisObject;
+                                if (tile == null
+                                        || !tile.getClass().getName().endsWith("CustomTile")) {
+                                    return;
+                                }
+                                Object comp = XposedHelpers.getObjectField(tile, "mComponent");
+                                if (!(comp instanceof android.content.ComponentName)) {
+                                    return;
+                                }
+                                android.content.ComponentName cn =
+                                        (android.content.ComponentName) comp;
+                                if (!"com.zuakeo.inkpanel".equals(cn.getPackageName())) {
+                                    return;
+                                }
+                                param.setResult(null);
+                                XposedBridge.log(TAG + "tile clicked (hooked)");
+                                toggle(sAppCtx);
+                            } catch (Throwable t) {
+                                XposedBridge.log(TAG + "tile click hook failed: " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + "hooked tile click");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "hook tile click failed: " + t);
+        }
     }
 
     private void refreshTilesNow() {
