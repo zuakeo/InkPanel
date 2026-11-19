@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 set -e
-ROOT="WORKSPACE/inkpanel"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT/src"
 OUT="$ROOT/build"
-JAVA="$HOME/toolchain/jdk-17/bin/java.exe"
-JAVAC="$HOME/toolchain/jdk-17/bin/javac.exe"
-BT="WORKSPACE/toolchain/sdk/build-tools/36.0.0"
+
+# 工具链路径都可以用环境变量覆盖，不写死本机目录：
+#   TOOLCHAIN  JDK 与 Android SDK 的父目录（默认 ../toolchain）
+#   PYTHON     跑 tools/*.py 的解释器（默认 python）
+#   SIGN_STORE  签名用的调试证书（默认 ~/.android/debug.keystore）
+TC="${TOOLCHAIN:-$ROOT/../toolchain}"
+JAVA="$TC/jdk-17.0.21+9/bin/java.exe"
+JAVAC="$TC/jdk-17.0.21+9/bin/javac.exe"
+BT="$TC/sdk/build-tools/36.0.0"
 APKSIGNER="$BT/lib/apksigner.jar"
 AAPT2="$BT/aapt2.exe"
 ZIPALIGN="$BT/zipalign.exe"
-AJAR="WORKSPACE/toolchain/sdk/platforms/android-36/android.jar"
-PY="C:/Users/23636/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/python/python.exe"
-KS="C:/Users/23636/.android/debug.keystore"
+AJAR="$TC/sdk/platforms/android-36/android.jar"
+PY="${PYTHON:-python}"
+KS="${SIGN_STORE:-$HOME/.android/debug.keystore}"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/stubs" "$OUT/classes" "$OUT/dex" "$OUT/gen" "$ROOT/dist"
@@ -50,8 +56,8 @@ echo "[8/8] sign"
 "$JAVA" -jar "$APKSIGNER" sign \
     --ks "$KS" --ks-pass pass:android --key-pass pass:android \
     --ks-key-alias androiddebugkey \
-    --out "$ROOT/dist/InkPanel-0.2.apk" "$OUT/aligned.apk"
+    --out "$ROOT/dist/InkPanel-0.3.apk" "$OUT/aligned.apk"
 
-"$JAVA" -jar "$APKSIGNER" verify --print-certs "$ROOT/dist/InkPanel-0.2.apk" | head -4
-ls -lh "$ROOT/dist/InkPanel-0.2.apk"
+"$JAVA" -jar "$APKSIGNER" verify --print-certs "$ROOT/dist/InkPanel-0.3.apk" | head -4
+ls -lh "$ROOT/dist/InkPanel-0.3.apk"
 echo "OK"

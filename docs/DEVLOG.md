@@ -110,3 +110,69 @@ aapt2 → javac(-encoding UTF-8) → d8 → 注入 dex/META-INF → zipalign →
 
 - 藏掉下拉里那块内嵌的亮度/色温/显示模式面板（`qs_show_brightness=0`，当前仍是 null 未动）
 - 顺序铁律：先确认格子可用，再藏原面板，否则没有入口调亮度
+
+---
+
+## 2026-11-19 修复：下拉里「空出一截」的空白
+
+### 现象
+
+下拉展开后，快捷开关下面和通知之间空出一大块（约 300px）。用户描述是
+「先横屏再竖屏就变成这样」，但实测**重新展开一次就会复现**，和旋转无关。
+
+### 排查
+
+用 `uiautomator dump` 看视图树，下拉内容区是这样：
+
+```
+LinearLayout  y=138..828  h=690   ← 贴片容器
+LinearLayout  y=138..426  h=288   ← 缩过的头
+```
+
+再往模块日志里加了段祖先链 dump：
+
+```
+anc[0] LinearLayout            h=690 lp=704  child=HmctQSSecondInkPanel/0
+anc[1] HmctQuickStatusBarHeader h=828 lp=828  child=LinearLayout/690
+header -> 426
+```
+
+结论：v1 的 `shrinkHeader` 是**一次性**把头部高度写成绝对像素（`828 - 402 = 426`）。
+而 SystemUI 在每次重新布局（展开、旋转、换密度）时都会把 LayoutParams 恢复成
+它自己的固定值，写死的 426 被覆盖 → 空白回来。
+
+证据：改密度触发一次重新布局，日志立刻打出
+
+```
+fix LinearLayout -> WRAP_CONTENT (was 748)
+fix HmctQuickStatusBarHeader -> WRAP_CONTENT (was 880)
+```
+
+`was 748/880` 就是系统写回来的原值。
+
+### 修法
+
+不再写死像素，改成 **WRAP_CONTENT + 每次布局后自校正**：
+
+1. `fixLayout()`：从被隐藏的面板往上走，把「贴片容器」和 `HmctQuickStatusBarHeader`
+   的 `lp.height` 改成 `WRAP_CONTENT`（最多 3 层，遇到 StatusBarHeader 停）。
+2. `hookRelayout()`：hook `HmctQuickStatusBarHeader#onLayout`，`post` 出去再调
+   `fixLayout()`——这样系统无论怎么把 lp 写回来，下一次布局都会被纠正，
+   且 `post` 避免在布局过程里递归。
+
+### 验证
+
+| 场景 | 结果 |
+|---|---|
+| 冷启后展开 | 通知紧贴开关，无空白 |
+| 连续收起/展开 2 次 | 仍无空白（v1 在这里就会复现） |
+| `wm density 340` 触发配置变化 | 仍无空白，日志显示系统写回 748/880 后被纠正 |
+| 恢复 density 320 | 正常，比例回到原样 |
+
+> 注：这台 ROM 禁用了 `cmd window set-user-rotation`，无法用 adb 强制旋转。
+> 用改密度制造同一类「配置变化 + 重新布局」来验证，机制上等价。
+
+### 顺带
+
+`hideOnCreate` 里那个 `postDelayed(1800ms)` 仍然保留（首次展开时布局还没稳定），
+但现在它只是触发一次 `fixLayout()`，不再是唯一时机。

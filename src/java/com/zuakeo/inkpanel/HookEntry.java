@@ -136,9 +136,14 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /** 被隐藏的面板，供「每次布局后自校正」使用。 */
+    private static volatile java.lang.ref.WeakReference<android.view.View> sHidden =
+            new java.lang.ref.WeakReference<>(null);
+
     private void hookHideInlinePanel(final ClassLoader cl) {
         hideOnCreate(cl, "com.hmct.systemui.qs.ink2.HmctQSSecondInkPanel");
         hideOnCreate(cl, "com.hmct.systemui.qs.ink.HmctInkBrightnessTempContrast");
+        hookRelayout(cl);
     }
 
     private void hideOnCreate(final ClassLoader cl, final String className) {
@@ -149,6 +154,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) {
                     try {
                         final android.view.View v = (android.view.View) param.thisObject;
+                        sHidden = new java.lang.ref.WeakReference<>(v);
                         v.setVisibility(android.view.View.GONE);
                         v.postDelayed(new Runnable() {
                             @Override
@@ -169,8 +175,87 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /** 把 v 到 StatusBarHeader 之间的祖先链打出来：类名、当前高度、LP 高度。
+     *  排障用，看看到底哪一层还撑着空白。 */
+    private void dumpAncestors(final android.view.View v) {
+        try {
+            android.view.View cur = v;
+            for (int i = 0; i < 8 && cur != null; i++) {
+                android.view.ViewParent p = cur.getParent();
+                if (!(p instanceof android.view.View)) break;
+                android.view.View pv = (android.view.View) p;
+                String cls = pv.getClass().getName();
+                android.view.ViewGroup.LayoutParams lp = pv.getLayoutParams();
+                XposedBridge.log(TAG + "anc[" + i + "] " + cls
+                        + " h=" + pv.getHeight() + " measured=" + pv.getMeasuredHeight()
+                        + " lp=" + (lp == null ? -99 : lp.height)
+                        + " child=" + cur.getClass().getSimpleName() + "/" + cur.getHeight());
+                if (cls.contains("StatusBarHeader")) break;
+                cur = pv;
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "dumpAncestors failed: " + t);
+        }
+    }
+
+    /** 把「贴片容器」和「头部」都改成 WRAP_CONTENT，并 requestLayout。
+     *
+     *  为什么不写死像素：实测 lp 会在下拉重新展开/旋转后被系统恢复成原值
+     *  （header 828 / 贴片容器 704），写死的 426 一旦被覆盖就露出原来那块空白。
+     *  改成 WRAP_CONTENT 后由布局自己算，自适应且不需要旋转时重算。 */
+    private void fixLayout() {
+        try {
+            android.view.View v = sHidden.get();
+            if (v == null) return;
+            if (v.getVisibility() != android.view.View.GONE) {
+                v.setVisibility(android.view.View.GONE);
+            }
+            android.view.View cur = v;
+            for (int i = 0; i < 3; i++) {
+                android.view.ViewParent p = cur.getParent();
+                if (!(p instanceof android.view.View)) break;
+                final android.view.View pv = (android.view.View) p;
+                android.view.ViewGroup.LayoutParams lp = pv.getLayoutParams();
+                if (lp != null && lp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                    final int was = lp.height;
+                    lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                    pv.requestLayout();
+                    XposedBridge.log(TAG + "fix " + pv.getClass().getSimpleName()
+                            + " -> WRAP_CONTENT (was " + was + ")");
+                }
+                cur = pv;
+                if (pv.getClass().getName().contains("StatusBarHeader")) break;
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "fixLayout failed: " + t);
+        }
+    }
+
+    /** 头部每次布局后校正一次（系统会把自己的 lp 写回来，这里兜住）。 */
+    private void hookRelayout(final ClassLoader cl) {
+        try {
+            Class<?> h = Class.forName(
+                    "com.hmct.systemui.qs.HmctQuickStatusBarHeader", false, cl);
+            XposedBridge.hookAllMethods(h, "onLayout", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    final android.view.View header = (android.view.View) param.thisObject;
+                    // post 出去，避免在布局过程里又触发 requestLayout 造成循环
+                    header.post(new Runnable() {
+                        @Override
+                        public void run() { fixLayout(); }
+                    });
+                }
+            });
+            XposedBridge.log(TAG + "hooked header onLayout");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "hookRelayout failed: " + t);
+        }
+    }
+
     private void shrinkHeader(final android.view.View v) {
         try {
+            dumpAncestors(v);
             android.view.ViewParent vp = v.getParent();
             if (!(vp instanceof android.view.ViewGroup)) {
                 return;
@@ -178,26 +263,8 @@ public class HookEntry implements IXposedHookLoadPackage {
             android.view.ViewGroup container = (android.view.ViewGroup) vp;
             android.view.View tiles = container.getChildAt(0);
             int delta = container.getMeasuredHeight() - tiles.getMeasuredHeight();
-            if (delta <= 0) {
-                return;
-            }
-            container.getLayoutParams().height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
-            container.requestLayout();
-
-            android.view.ViewParent hp = container.getParent();
-            while (hp instanceof android.view.View
-                    && !hp.getClass().getName().contains("StatusBarHeader")) {
-                hp = ((android.view.View) hp).getParent();
-            }
-            if (hp instanceof android.view.View) {
-                android.view.View header = (android.view.View) hp;
-                int newH = header.getHeight() - delta;
-                if (newH > 0) {
-                    header.getLayoutParams().height = newH;
-                    header.requestLayout();
-                    XposedBridge.log(TAG + "header -> " + newH);
-                }
-            }
+            XposedBridge.log(TAG + "shrink delta=" + delta);
+            fixLayout();
         } catch (Throwable t) {
             XposedBridge.log(TAG + "shrink failed: " + t);
         }
